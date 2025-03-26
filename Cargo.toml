@@ -1,0 +1,11 @@
+[package]
+name = "rust-web3-utils"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ethers = { version = "2.0", features = ["rustls"] }
+tokio = { version = "1.28", features = ["full"] }
+dotenv = "0.15.0"
+anyhow = "1.0"
+chrono = "0.4"
