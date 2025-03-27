@@ -3,9 +3,19 @@ name = "rust-web3-utils"
 version = "0.1.0"
 edition = "2021"
 
+# Define multiple binaries
+[[bin]]
+name = "latency"
+path = "src/main.rs"
+
+[[bin]]
+name = "spam"
+path = "src/spam.rs"
+
 [dependencies]
 ethers = { version = "2.0", features = ["rustls"] }
 tokio = { version = "1.28", features = ["full"] }
 dotenv = "0.15.0"
 anyhow = "1.0"
 chrono = "0.4"
+hex = "0.4.3"

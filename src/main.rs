@@ -44,30 +44,50 @@ async fn send_transaction(
     println!("getBlock: {:?}", start_get_block.elapsed());
     println!("Block before: {}", block_before);
     
-    // Start timing
-    let start = Instant::now();
-    let start2 = Instant::now();
+    // Start timing for the whole process
+    let start_time = Instant::now();
     
     // Send transaction and get the transaction hash
     println!("Sending transaction...");
     let tx_hash = client.send_transaction(tx.clone(), None).await?.tx_hash();
     println!("Transaction hash: {}", tx_hash);
-    
-    let elapsed2 = start2.elapsed();
-    println!("tx: {:?}", elapsed2);
     // Wait for receipt
     loop {
         if let Some(receipt) = client.get_transaction_receipt(tx_hash).await? {
             let block_now = client.get_block_number().await?;
             println!("Block now:     {}", block_now);
-            println!("Block receipt: {}", receipt.block_number.unwrap_or_default());
+            
+            // Print the full receipt in a more readable format
+            println!("\n====== TRANSACTION RECEIPT ======");
+            println!("Transaction Hash: {}", receipt.transaction_hash);
+            println!("Block Hash: {:?}", receipt.block_hash);
+            println!("Block Number: {:?}", receipt.block_number);
+            println!("Transaction Index: {:?}", receipt.transaction_index);
+            println!("From: {:?}", receipt.from);
+            println!("To: {:?}", receipt.to);
+            println!("Contract Address: {:?}", receipt.contract_address);
+            println!("Gas Used: {:?}", receipt.gas_used);
+            println!("Cumulative Gas Used: {:?}", receipt.cumulative_gas_used);
+            println!("Status: {:?}", receipt.status);
+            println!("Effective Gas Price: {:?}", receipt.effective_gas_price);
+            
+            if !receipt.logs.is_empty() {
+                println!("\nLogs:");
+                for (i, log) in receipt.logs.iter().enumerate() {
+                    println!("  Log #{}", i);
+                    println!("    Address: {:?}", log.address);
+                    println!("    Topics: {:?}", log.topics);
+                    println!("    Data: {:?}", log.data);
+                }
+            }
+            println!("================================\n");
             break;
         }
-        // sleep(Duration::from_millis(100)).await;
+        sleep(Duration::from_millis(100)).await;
     }
     
-    let elapsed = start.elapsed();
-    println!("tx: {:?}", elapsed);
+    let elapsed = start_time.elapsed();
+    println!("Total transaction time: {:?}", elapsed);
     
     // Get final receipt
     let receipt = client.get_transaction_receipt(tx_hash).await?;
@@ -91,6 +111,8 @@ async fn main() -> Result<()> {
     let rpc_url = env::var("RPC_PROVIDER").expect("RPC_PROVIDER must be set");
     let private_key = env::var("PRIVATE_KEY_1").expect("PRIVATE_KEY_1 must be set");
     
+    // Clone rpc_url before it's moved
+    let rpc_url_display = rpc_url.clone();
     let provider = Provider::<Http>::try_from(rpc_url)?;
     let wallet: LocalWallet = private_key.parse()?;
     let wallet_address = wallet.address();
@@ -100,11 +122,14 @@ async fn main() -> Result<()> {
     let client = Arc::new(SignerMiddleware::new(provider, wallet));
     
     let block = client.get_block_number().await?;
+    println!("RPC URL: {}", rpc_url_display);
+    println!("Chain ID: {}", chain_id);
     println!("Current block: {}", block);
     println!("Wallet address: {}", wallet_address);
     
-    let i = 0;
     // for i in 0..10 {
+    let i= 1;
+        println!("\n========== TEST #{} ==========", i + 1);
         match send_transaction(client.clone(), i).await {
             Ok((time, hash)) => {
                 println!("[TX] e2e time: {}ms, hash: {}", time, hash);
@@ -113,6 +138,7 @@ async fn main() -> Result<()> {
                 println!("Transaction error: {}", e);
             }
         }
+        println!("============================\n");
     // }
     
     Ok(())

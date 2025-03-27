@@ -2576,6 +2576,7 @@ dependencies = [
  "chrono",
  "dotenv",
  "ethers",
+ "hex",
  "tokio",
 ]
 
