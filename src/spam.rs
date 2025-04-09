@@ -224,10 +224,10 @@ async fn main() -> Result<()> {
     let num_transactions = if args.len() > 2 {
         match args[2].parse::<u64>() {
             Ok(n) => n,
-            Err(_) => 5, // Default to 5 if parsing fails
+            Err(_) => 10, // Default to 5 if parsing fails
         }
     } else {
-        5 // Default to 5 transactions
+        10 // Default to 10 transactions
     };
     
     println!("\nSending {} transactions sequentially, waiting for confirmation after each...", num_transactions);
