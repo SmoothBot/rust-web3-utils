@@ -6,32 +6,37 @@ use ethers::{
     prelude::*,
     providers::{Http, Middleware, Provider},
     signers::{LocalWallet, Signer},
-    types::{transaction::eip2718::TypedTransaction, TransactionReceipt, H256, U256},
+    types::{
+        transaction::eip2718::TypedTransaction, 
+        Eip1559TransactionRequest, TransactionReceipt, BlockNumber,
+        H256, U256
+    },
 };
 use std::{env, fs, io::Write, path::Path, sync::Arc, time::Instant};
 use tokio::time::sleep;
 use std::time::Duration;
 
-/// Sends a transaction and waits for the receipt
-/// This version removes unnecessary await calls to minimize RPC requests
+/// Sends an EIP-1559 transaction and waits for the receipt
+/// Uses max fee per gas and priority fee per gas for more predictable inclusion
 async fn send_and_confirm_transaction(
     client: Arc<SignerMiddleware<Provider<Http>, LocalWallet>>,
     nonce: u64,
-    gas_price: U256,
+    max_fee_per_gas: U256,
+    priority_fee_per_gas: U256,
 ) -> Result<(H256, Duration, Duration)> {
     let address = client.address();
     
-    // Populate transaction with explicit nonce and hardcoded gas values
-    let mut tx = TypedTransaction::default();
-    tx.set_to(address);
-    tx.set_value(U256::zero());
-    tx.set_nonce(nonce);
+    // Create an EIP-1559 transaction
+    let tx_request = Eip1559TransactionRequest::new()
+        .to(address)
+        .value(U256::zero())
+        .nonce(nonce)
+        .gas(21000) // Fixed gas limit for a simple ETH transfer
+        .max_fee_per_gas(max_fee_per_gas)
+        .max_priority_fee_per_gas(priority_fee_per_gas);
     
-    // Set fixed gas limit - 21000 is the cost of a simple ETH transfer
-    tx.set_gas(21000);
-    
-    // Use the gas price passed from the main function
-    tx.set_gas_price(gas_price);
+    // Convert to TypedTransaction
+    let tx = TypedTransaction::Eip1559(tx_request);
     
     // Start measuring send time
     let send_start = Instant::now();
@@ -84,7 +89,9 @@ fn generate_report(
     rpc_url: &str,
     chain_id: U256,
     wallet_address: &str,
-    gas_price: U256,
+    base_fee: U256,
+    max_fee_per_gas: U256,
+    priority_fee_per_gas: U256,
     total_duration: Duration,
     results: &[(H256, Duration, Duration, Duration)],
 ) -> Result<String> {
@@ -138,9 +145,12 @@ fn generate_report(
     md_content.push_str(&format!("- **RPC URL**: {}\n", rpc_url));
     md_content.push_str(&format!("- **Chain ID**: {}\n", chain_id));
     md_content.push_str(&format!("- **Wallet**: {}\n", wallet_address));
-    md_content.push_str(&format!("- **Gas Price**: {} gwei\n", gas_price.as_u64() / 1_000_000_000));
     md_content.push_str(&format!("- **Total Test Duration**: {} ms\n", total_duration.as_millis()));
-    md_content.push_str(&format!("- **Number of Transactions**: {}\n\n", results.len()));
+    md_content.push_str(&format!("- **Number of Transactions**: {}\n", results.len()));
+    md_content.push_str(&format!("- **Transaction Type**: EIP-1559 (Type 2)\n"));
+    md_content.push_str(&format!("- **Base Fee**: {:.2} gwei\n", base_fee.as_u128() as f64 / 1_000_000_000.0));
+    md_content.push_str(&format!("- **Max Fee Per Gas**: {:.2} gwei\n", max_fee_per_gas.as_u128() as f64 / 1_000_000_000.0));
+    md_content.push_str(&format!("- **Priority Fee Per Gas**: {:.2} gwei\n\n", priority_fee_per_gas.as_u128() as f64 / 1_000_000_000.0));
     
     // Summary statistics
     md_content.push_str("## Summary Statistics\n\n");
@@ -203,16 +213,49 @@ async fn main() -> Result<()> {
     
     // Make necessary RPC calls before the transaction loop
     let starting_nonce = client.get_transaction_count(wallet_address, None).await?.as_u64();
-    let default_gas_price = client.get_gas_price().await?;
-    let gas_price: U256 = default_gas_price * 3;// Use 3x the default gas price
+    
+    // Get EIP-1559 fee data
+    println!("Getting latest fee data from network...");
+    
+    // Get fee history to better estimate fees
+    let fee_history = client.fee_history(10, BlockNumber::Latest, &[25.0, 50.0, 75.0]).await?;
+    
+    // Get latest base fee
+    let latest_block = client.get_block(BlockNumber::Latest).await?;
+    let base_fee = latest_block
+        .and_then(|b| b.base_fee_per_gas)
+        .unwrap_or_else(|| U256::from(1_000_000_000u64)); // Fallback to 1 gwei if not available
+    
+    // Use an aggressive priority fee 
+    // Either from fee history or a minimum of 2 gwei (but significantly higher for fast inclusion)
+    let suggested_priority_fee: U256 = fee_history.reward
+        .last()
+        .and_then(|r| r.last())
+        .copied()
+        .unwrap_or_else(|| U256::from(2_000_000_000u64)); // 2 gwei as fallback
+    
+    // Set an aggressive priority fee (3x the suggested or at least 5 gwei, but not more than 30 gwei)
+    let min_priority_fee: U256 = U256::from(5_000_000_000u64); // 5 gwei
+    let max_priority_fee: U256 = U256::from(30_000_000_000u64); // 30 gwei
+    let priority_fee_per_gas: U256 = std::cmp::min(
+        std::cmp::max(suggested_priority_fee * 3, min_priority_fee),
+        max_priority_fee
+    );
+    
+    // Calculate max fee per gas (base fee + priority fee + buffer)
+    // Ensure max fee is always higher than priority fee
+    let additional_buffer: U256 = U256::from(2_000_000_000u64); // 2 gwei buffer
+    let max_fee_per_gas: U256 = base_fee + priority_fee_per_gas + additional_buffer;
     
     // Display info
     println!("RPC URL: {}", rpc_url_display);
     println!("Chain ID: {}", chain_id);
     println!("Wallet address: {}", wallet_address);
     println!("Starting nonce: {}", starting_nonce);
-    println!("Default gas price: {} gwei", default_gas_price.as_u64() / 1_000_000_000);
-    println!("Using gas price (2x): {} gwei", gas_price.as_u64() / 1_000_000_000);
+    println!("EIP-1559 Fee Data:");
+    println!("  Base fee: {:.2} gwei", base_fee.as_u128() as f64 / 1_000_000_000.0);
+    println!("  Max fee per gas: {:.2} gwei", max_fee_per_gas.as_u128() as f64 / 1_000_000_000.0);
+    println!("  Priority fee per gas: {:.2} gwei", priority_fee_per_gas.as_u128() as f64 / 1_000_000_000.0);
     if !test_name.is_empty() {
         println!("Test name: {}", test_name);
     }
@@ -242,7 +285,7 @@ async fn main() -> Result<()> {
         // Start timing total transaction time
         let tx_start = Instant::now();
         
-        match send_and_confirm_transaction(client.clone(), nonce, gas_price).await {
+        match send_and_confirm_transaction(client.clone(), nonce, max_fee_per_gas, priority_fee_per_gas).await {
             Ok((hash, send_time, confirm_time)) => {
                 let total_time = tx_start.elapsed();
                 println!("TX #{}: total time: {:?} (send: {:?}, confirm: {:?})", 
@@ -314,8 +357,10 @@ async fn main() -> Result<()> {
             test_name, 
             &rpc_url_display, 
             chain_id, 
-            &wallet_address.to_string(), 
-            gas_price, 
+            &wallet_address.to_string(),
+            base_fee,
+            max_fee_per_gas,
+            priority_fee_per_gas,
             batch_elapsed, 
             &results
         ) {
