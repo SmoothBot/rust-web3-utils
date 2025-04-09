@@ -204,7 +204,7 @@ async fn main() -> Result<()> {
     // Make necessary RPC calls before the transaction loop
     let starting_nonce = client.get_transaction_count(wallet_address, None).await?.as_u64();
     let default_gas_price = client.get_gas_price().await?;
-    let gas_price: U256 = default_gas_price * 2;
+    let gas_price: U256 = default_gas_price * 3;// Use 3x the default gas price
     
     // Display info
     println!("RPC URL: {}", rpc_url_display);
