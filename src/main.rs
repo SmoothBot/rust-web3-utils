@@ -30,8 +30,9 @@ async fn send_transaction(
     tx.set_value(U256::zero());
     tx.set_nonce(nonce);
     
-    // Get the gas price and set it
+    // Get the gas price and set it (2x the default)
     let gas_price = client.get_gas_price().await?;
+    let gas_price = gas_price * 2;
     tx.set_gas_price(gas_price);
     
     // Estimate gas

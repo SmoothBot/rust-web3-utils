@@ -1,4 +1,5 @@
 use anyhow::Result;
+use chrono::Utc;
 use dotenv::dotenv;
 use ethers::{
     middleware::SignerMiddleware,
@@ -7,7 +8,7 @@ use ethers::{
     signers::{LocalWallet, Signer},
     types::{transaction::eip2718::TypedTransaction, TransactionReceipt, H256, U256},
 };
-use std::{env, sync::Arc, time::Instant};
+use std::{env, fs, io::Write, path::Path, sync::Arc, time::Instant};
 use tokio::time::sleep;
 use std::time::Duration;
 
@@ -77,9 +78,115 @@ async fn send_and_confirm_transaction(
     Ok((tx_hash, send_duration, confirm_duration))
 }
 
+/// Generates a markdown report of test results
+fn generate_report(
+    test_name: &str,
+    rpc_url: &str,
+    chain_id: U256,
+    wallet_address: &str,
+    gas_price: U256,
+    total_duration: Duration,
+    results: &[(H256, Duration, Duration, Duration)],
+) -> Result<String> {
+    let timestamp = Utc::now().format("%Y-%m-%d-%H%M%S");
+    let filename = if test_name.is_empty() {
+        format!("rpc-test-{}.md", timestamp)
+    } else {
+        format!("{}-{}.md", test_name, timestamp)
+    };
+    
+    let path = Path::new("results").join(&filename);
+    
+    // Create statistics
+    let (min_send, max_send, avg_send, 
+         min_confirm, max_confirm, avg_confirm,
+         min_total, max_total, avg_total) = if !results.is_empty() {
+        // Send time stats
+        let send_times = results.iter().map(|(_, s, _, _)| s.as_millis() as u128).collect::<Vec<_>>();
+        let min_send = send_times.iter().min().unwrap_or(&0);
+        let max_send = send_times.iter().max().unwrap_or(&0);
+        let avg_send = send_times.iter().sum::<u128>() / send_times.len() as u128;
+
+        // Confirm time stats
+        let confirm_times = results.iter().map(|(_, _, c, _)| c.as_millis() as u128).collect::<Vec<_>>();
+        let min_confirm = confirm_times.iter().min().unwrap_or(&0);
+        let max_confirm = confirm_times.iter().max().unwrap_or(&0);
+        let avg_confirm = confirm_times.iter().sum::<u128>() / confirm_times.len() as u128;
+
+        // Total time stats
+        let total_times = results.iter().map(|(_, _, _, t)| t.as_millis() as u128).collect::<Vec<_>>();
+        let min_total = total_times.iter().min().unwrap_or(&0);
+        let max_total = total_times.iter().max().unwrap_or(&0);
+        let avg_total = total_times.iter().sum::<u128>() / total_times.len() as u128;
+        
+        (*min_send, *max_send, avg_send,
+         *min_confirm, *max_confirm, avg_confirm,
+         *min_total, *max_total, avg_total)
+    } else {
+        (0, 0, 0, 0, 0, 0, 0, 0, 0)
+    };
+    
+    // Create markdown content
+    let mut md_content = String::new();
+    
+    // Title and testing information
+    md_content.push_str(&format!("# RPC Latency Test Results: {}\n\n", 
+        if test_name.is_empty() { "Default" } else { test_name }));
+    
+    md_content.push_str(&format!("## Test Information\n\n"));
+    md_content.push_str(&format!("- **Date and Time**: {}\n", Utc::now().format("%Y-%m-%d %H:%M:%S UTC")));
+    md_content.push_str(&format!("- **RPC URL**: {}\n", rpc_url));
+    md_content.push_str(&format!("- **Chain ID**: {}\n", chain_id));
+    md_content.push_str(&format!("- **Wallet**: {}\n", wallet_address));
+    md_content.push_str(&format!("- **Gas Price**: {} gwei\n", gas_price.as_u64() / 1_000_000_000));
+    md_content.push_str(&format!("- **Total Test Duration**: {} ms\n", total_duration.as_millis()));
+    md_content.push_str(&format!("- **Number of Transactions**: {}\n\n", results.len()));
+    
+    // Summary statistics
+    md_content.push_str("## Summary Statistics\n\n");
+    md_content.push_str("| Metric | Min (ms) | Max (ms) | Avg (ms) |\n");
+    md_content.push_str("|--------|----------|----------|----------|\n");
+    md_content.push_str(&format!("| Send Time | {} | {} | {} |\n", min_send, max_send, avg_send));
+    md_content.push_str(&format!("| Confirm Time | {} | {} | {} |\n", min_confirm, max_confirm, avg_confirm));
+    md_content.push_str(&format!("| Total Time | {} | {} | {} |\n\n", min_total, max_total, avg_total));
+    
+    // Individual transactions
+    md_content.push_str("## Individual Transaction Results\n\n");
+    md_content.push_str("| TX# | Send (ms) | Confirm (ms) | Total (ms) | Hash |\n");
+    md_content.push_str("|-----|-----------|--------------|------------|--------------|\n");
+    
+    for (i, (hash, send_time, confirm_time, total_time)) in results.iter().enumerate() {
+        md_content.push_str(&format!("| {} | {} | {} | {} | `0x{}` |\n", 
+            i + 1,
+            send_time.as_millis(),
+            confirm_time.as_millis(),
+            total_time.as_millis(),
+            // Convert the full hash to a hex string without truncation
+            hex::encode(hash.as_bytes())
+        ));
+    }
+    
+    // Create directory if it doesn't exist
+    if !Path::new("results").exists() {
+        fs::create_dir("results")?;
+    }
+    
+    // Write to file
+    let mut file = fs::File::create(&path)?;
+    file.write_all(md_content.as_bytes())?;
+    
+    println!("\nReport saved to: {}", path.display());
+    
+    Ok(filename)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenv().ok();
+    
+    // Check for test name from command line args
+    let args: Vec<String> = std::env::args().collect();
+    let test_name = if args.len() > 1 { &args[1] } else { "" };
     
     // Setup connection
     let rpc_url = env::var("RPC_PROVIDER").expect("RPC_PROVIDER must be set");
@@ -96,24 +203,38 @@ async fn main() -> Result<()> {
     
     // Make necessary RPC calls before the transaction loop
     let starting_nonce = client.get_transaction_count(wallet_address, None).await?.as_u64();
-    let gas_price = client.get_gas_price().await?;
+    let default_gas_price = client.get_gas_price().await?;
+    let gas_price: U256 = default_gas_price * 2;
     
     // Display info
     println!("RPC URL: {}", rpc_url_display);
     println!("Chain ID: {}", chain_id);
     println!("Wallet address: {}", wallet_address);
     println!("Starting nonce: {}", starting_nonce);
-    println!("Gas price: {} gwei", gas_price.as_u64() / 1_000_000_000);
+    println!("Default gas price: {} gwei", default_gas_price.as_u64() / 1_000_000_000);
+    println!("Using gas price (2x): {} gwei", gas_price.as_u64() / 1_000_000_000);
+    if !test_name.is_empty() {
+        println!("Test name: {}", test_name);
+    }
     
     // Start timer for entire batch
     let batch_start_time = Instant::now();
     
-    // Send 10 transactions sequentially, waiting for confirmation after each
-    println!("\nSending 10 transactions sequentially, waiting for confirmation after each...");
+    // Get number of transactions from args or use default
+    let num_transactions = if args.len() > 2 {
+        match args[2].parse::<u64>() {
+            Ok(n) => n,
+            Err(_) => 5, // Default to 5 if parsing fails
+        }
+    } else {
+        5 // Default to 5 transactions
+    };
     
-    let mut results = Vec::with_capacity(10);
+    println!("\nSending {} transactions sequentially, waiting for confirmation after each...", num_transactions);
     
-    for i in 0..10 {
+    let mut results = Vec::with_capacity(num_transactions as usize);
+    
+    for i in 0..num_transactions {
         let nonce = starting_nonce + i;
         
         println!("\n--- Transaction #{} (nonce: {}) ---", i + 1, nonce);
@@ -187,6 +308,20 @@ async fn main() -> Result<()> {
         
         println!("\nSUMMARY: {} transactions sent and confirmed sequentially in {} ms (min: {} ms, max: {} ms, avg: {} ms)",
             results.len(), batch_elapsed.as_millis(), min_total, max_total, avg_total);
+        
+        // Generate markdown report
+        match generate_report(
+            test_name, 
+            &rpc_url_display, 
+            chain_id, 
+            &wallet_address.to_string(), 
+            gas_price, 
+            batch_elapsed, 
+            &results
+        ) {
+            Ok(filename) => println!("Report generated: results/{}", filename),
+            Err(e) => println!("Failed to generate report: {}", e),
+        }
     }
     
     Ok(())
