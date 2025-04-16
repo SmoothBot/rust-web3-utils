@@ -58,6 +58,13 @@ async fn send_transaction(
             let block_now = client.get_block_number().await?;
             println!("Block now:     {}", block_now);
             
+            // Print the transaction status
+            if let Some(status) = receipt.status {
+                println!("Transaction Status: {}", if status.low_u32() == 1 { "SUCCESS" } else { "FAILED" });
+            } else {
+                println!("Transaction Status: UNKNOWN");
+            }
+            
             // Print the full receipt in a more readable format
             println!("\n====== TRANSACTION RECEIPT ======");
             println!("Transaction Hash: {}", receipt.transaction_hash);
@@ -84,7 +91,7 @@ async fn send_transaction(
             println!("================================\n");
             break;
         }
-        // sleep(Duration::from_millis(100)).await;
+        sleep(Duration::from_millis(100)).await;
     }
     
     let elapsed = start_time.elapsed();
@@ -123,14 +130,15 @@ async fn main() -> Result<()> {
     let client = Arc::new(SignerMiddleware::new(provider, wallet));
     
     let block = client.get_block_number().await?;
+    print!("Address: {}", wallet_address);
     println!("RPC URL: {}", rpc_url_display);
     println!("Chain ID: {}", chain_id);
     println!("Current block: {}", block);
-    println!("Wallet address: {}", wallet_address);
+    println!("Wallet address fuck: {}", wallet_address);
     
     // for i in 0..10 {
     let i= 1;
-        println!("\n========== TEST #{} ==========", i + 1);
+        println!("\n========== TEST #{} ==========", i);
         match send_transaction(client.clone(), i).await {
             Ok((time, hash)) => {
                 println!("[TX] e2e time: {}ms, hash: {}", time, hash);

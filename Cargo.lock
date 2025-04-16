@@ -2652,6 +2652,7 @@ dependencies = [
  "chrono",
  "dotenv",
  "ethers",
+ "futures",
  "futures-util",
  "hex",
  "serde",
