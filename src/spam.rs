@@ -58,8 +58,8 @@ async fn send_and_confirm_transaction(
                 break;
             }
             None => {
-                // Short sleep to avoid hammering the RPC
-                sleep(Duration::from_millis(10)).await;
+                // Short sleep to avoid hammering the RPC - slow chain problem, don't use for rise and mega
+                sleep(Duration::from_millis(100)).await;
             }
         }
     }
