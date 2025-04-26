@@ -1,125 +1,103 @@
 use anyhow::Result;
-use chrono::Utc;
 use dotenv::dotenv;
 use ethers::{
     middleware::SignerMiddleware,
-    prelude::*,
     providers::{Http, Middleware, Provider},
     signers::{LocalWallet, Signer},
     types::{transaction::eip2718::TypedTransaction, TransactionReceipt, H256, U256},
-    utils::keccak256,
 };
 use std::{env, sync::Arc, time::Instant};
-use tokio::time::{sleep, Duration};
+use tokio::time::sleep;
+use std::time::Duration;
 
-async fn send_transaction(
-    client: Arc<SignerMiddleware<Provider<Http>, LocalWallet>>, 
-    nonce_add: u64
-) -> Result<(u64, H256)> {
-    // Clone the Arc to avoid lifetime issues
-    let client = client.clone();
+/// Sends a transaction and waits for the receipt
+async fn send_and_confirm_transaction(
+    client: Arc<SignerMiddleware<Provider<Http>, LocalWallet>>,
+    gas_price: U256,
+) -> Result<(H256, Duration, Duration)> {
     let address = client.address();
-    
-    // Get current nonce and adjust if needed
-    let nonce = client.get_transaction_count(address, None).await?;
-    let nonce = nonce.as_u64() + nonce_add;
     
     // Populate transaction
     let mut tx = TypedTransaction::default();
     tx.set_to(address);
     tx.set_value(U256::zero());
-    tx.set_nonce(nonce);
     
-    // Get the gas price and set it (2x the default)
-    let gas_price = client.get_gas_price().await?;
-    let gas_price = gas_price * 2;
+    // Set fixed gas limit - 21000 is the cost of a simple ETH transfer
+    tx.set_gas(21000);
+    
+    // Use the gas price passed from the main function
     tx.set_gas_price(gas_price);
     
-    // Estimate gas
-    let gas = client.estimate_gas(&tx, None).await?;
-    tx.set_gas(gas);
+    // Start measuring send time
+    let send_start = Instant::now();
     
-    // Get the current block number
-    let start_get_block = Instant::now();
-    let block_before = client.get_block_number().await?;
-    println!("getBlock: {:?}", start_get_block.elapsed());
-    println!("Block before: {}", block_before);
+    // Send transaction
+    let pending_tx = client.send_transaction(tx, None).await?;
+    let tx_hash = pending_tx.tx_hash();
     
-    // Start timing for the whole process
-    let start_time = Instant::now();
+    // Measure send time
+    let send_duration = send_start.elapsed();
+    println!("TX sent in {:?}, hash: {}", send_duration, tx_hash);
     
-    // Send transaction and get the transaction hash
-    println!("Sending transaction...");
-    let tx_hash = client.send_transaction(tx.clone(), None).await?.tx_hash();
-    println!("Transaction hash: {}", tx_hash);
+    // Start measuring confirmation time
+    let confirm_start = Instant::now();
+    
     // Wait for receipt
-    loop {
-        if let Some(receipt) = client.get_transaction_receipt(tx_hash).await? {
-            let block_now = client.get_block_number().await?;
-            println!("Block now:     {}", block_now);
-            
-            // Print the transaction status
-            if let Some(status) = receipt.status {
-                println!("Transaction Status: {}", if status.low_u32() == 1 { "SUCCESS" } else { "FAILED" });
-            } else {
-                println!("Transaction Status: UNKNOWN");
+    println!("Waiting for confirmation...");
+    let mut receipt: Option<TransactionReceipt> = None;
+    
+    while receipt.is_none() {
+        match client.get_transaction_receipt(tx_hash).await? {
+            Some(r) => {
+                receipt = Some(r.clone());
+                
+                // Print the transaction status in a more readable format
+                let status_str = if let Some(status) = r.status {
+                    if status.low_u32() == 1 { "SUCCESS" } else { "FAILED" }
+                } else {
+                    "UNKNOWN"
+                };
+                
+                println!("\n====== TRANSACTION RECEIPT ======");
+                println!("Transaction Hash: {:?}", r.transaction_hash);
+                println!("Transaction Status: {}", status_str);
+                println!("Block Number: {:?}", r.block_number);
+                println!("Gas Used: {:?}", r.gas_used);
+                println!("================================");
+                break;
             }
-            
-            // Print the full receipt in a more readable format
-            println!("\n====== TRANSACTION RECEIPT ======");
-            println!("Transaction Hash: {}", receipt.transaction_hash);
-            println!("Block Hash: {:?}", receipt.block_hash);
-            println!("Block Number: {:?}", receipt.block_number);
-            println!("Transaction Index: {:?}", receipt.transaction_index);
-            println!("From: {:?}", receipt.from);
-            println!("To: {:?}", receipt.to);
-            println!("Contract Address: {:?}", receipt.contract_address);
-            println!("Gas Used: {:?}", receipt.gas_used);
-            println!("Cumulative Gas Used: {:?}", receipt.cumulative_gas_used);
-            println!("Status: {:?}", receipt.status);
-            println!("Effective Gas Price: {:?}", receipt.effective_gas_price);
-            
-            if !receipt.logs.is_empty() {
-                println!("\nLogs:");
-                for (i, log) in receipt.logs.iter().enumerate() {
-                    println!("  Log #{}", i);
-                    println!("    Address: {:?}", log.address);
-                    println!("    Topics: {:?}", log.topics);
-                    println!("    Data: {:?}", log.data);
-                }
+            None => {
+                sleep(Duration::from_millis(100)).await;
             }
-            println!("================================\n");
-            break;
         }
-        sleep(Duration::from_millis(100)).await;
     }
     
-    let elapsed = start_time.elapsed();
-    println!("Total transaction time: {:?}", elapsed);
+    // Measure confirmation time
+    let confirm_duration = confirm_start.elapsed();
+    println!("TX confirmed in {:?}", confirm_duration);
     
-    // Get final receipt
-    let receipt = client.get_transaction_receipt(tx_hash).await?;
-    let block_diff = receipt.as_ref()
-        .and_then(|r| r.block_number)
-        .map(|bn| bn.as_u64() - block_before.as_u64())
-        .unwrap_or(0);
+    // Get block information
+    if let Some(r) = receipt {
+        if let Some(block_number) = r.block_number {
+            println!("Included in block: {}", block_number);
+        }
+    }
     
-    println!("[tx] complete - block diff: {}", block_diff);
-    
-    // Wait before next transaction
-    sleep(Duration::from_secs(5)).await;
-    
-    Ok((elapsed.as_millis() as u64, tx_hash))
+    Ok((tx_hash, send_duration, confirm_duration))
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenv().ok();
     
+    // Check for test name from command line args
+    let args: Vec<String> = std::env::args().collect();
+    let test_name = if args.len() > 1 { &args[1] } else { "" };
+    
+    // Setup connection
     let rpc_url = env::var("RPC_PROVIDER").expect("RPC_PROVIDER must be set");
     let private_key = env::var("PRIVATE_KEY_1").expect("PRIVATE_KEY_1 must be set");
     
-    // Clone rpc_url before it's moved
     let rpc_url_display = rpc_url.clone();
     let provider = Provider::<Http>::try_from(rpc_url)?;
     let wallet: LocalWallet = private_key.parse()?;
@@ -129,26 +107,37 @@ async fn main() -> Result<()> {
     
     let client = Arc::new(SignerMiddleware::new(provider, wallet));
     
-    let block = client.get_block_number().await?;
-    print!("Address: {}", wallet_address);
+    // Make necessary RPC calls before the transaction
+    let default_gas_price = client.get_gas_price().await?;
+    let gas_price: U256 = default_gas_price * 3; // Use 3x the default gas price
+    
+    // Display info
     println!("RPC URL: {}", rpc_url_display);
     println!("Chain ID: {}", chain_id);
-    println!("Current block: {}", block);
-    println!("Wallet address fuck: {}", wallet_address);
+    println!("Wallet address: {}", wallet_address);
+    println!("Default gas price: {} gwei", default_gas_price.as_u64() / 1_000_000_000);
+    println!("Using gas price (3x): {} gwei", gas_price.as_u64() / 1_000_000_000);
+    if !test_name.is_empty() {
+        println!("Test name: {}", test_name);
+    }
     
-    // for i in 0..10 {
-    let i= 1;
-        println!("\n========== TEST #{} ==========", i);
-        match send_transaction(client.clone(), i).await {
-            Ok((time, hash)) => {
-                println!("[TX] e2e time: {}ms, hash: {}", time, hash);
-            }
-            Err(e) => {
-                println!("Transaction error: {}", e);
-            }
+    println!("\nSending a single transaction and measuring latency...");
+    
+    // Start timing total transaction time
+    let tx_start = Instant::now();
+    
+    match send_and_confirm_transaction(client.clone(), gas_price).await {
+        Ok((tx_hash, send_time, confirm_time)) => {
+            let total_time = tx_start.elapsed();
+            println!("\n===== SUMMARY =====");
+            println!("TX hash: {}", tx_hash);
+            println!("Transaction sent and confirmed in {:?} (send: {:?}, confirm: {:?})", 
+                    total_time, send_time, confirm_time);
+        },
+        Err(e) => {
+            println!("Error: {}", e);
         }
-        println!("============================\n");
-    // }
+    }
     
     Ok(())
 }

@@ -20,6 +20,10 @@ path = "src/sub.rs"
 name = "dump"
 path = "src/dump.rs"
 
+[[bin]]
+name = "sync"
+path = "src/sync.rs"
+
 [dependencies]
 ethers = { version = "2.0", features = ["rustls"] }
 tokio = { version = "1.28", features = ["full"] }
@@ -32,3 +36,4 @@ futures = "0.3"
 futures-util = "0.3"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+thiserror = "1.0"
