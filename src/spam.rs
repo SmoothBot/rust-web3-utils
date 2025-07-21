@@ -261,7 +261,7 @@ async fn main() -> Result<()> {
     // Display info
     println!("RPC URL: {}", rpc_url_display);
     println!("Chain ID: {}", chain_id);
-    println!("Wallet address fuck: {}", wallet_address);
+    println!("Wallet address: {}", wallet_address);
     println!("Starting nonce: {}", starting_nonce);
     println!("Default gas price: {} gwei", default_gas_price.as_u64() / 1_000_000_000);
     println!("Using gas price (3x): {} gwei", gas_price.as_u64() / 1_000_000_000);
@@ -284,7 +284,7 @@ async fn main() -> Result<()> {
     let num_transactions = if args.len() > tx_count_arg_index {
         args[tx_count_arg_index].parse::<u64>().unwrap_or(10)
     } else {
-        10 // Default to 10 transactions
+        10000 // Default to 10 transactions
     };
     
     println!("\nSending {} transactions sequentially, waiting for confirmation after each...", num_transactions);
