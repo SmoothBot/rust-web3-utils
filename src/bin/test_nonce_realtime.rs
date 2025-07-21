@@ -56,9 +56,9 @@ async fn main() -> Result<()> {
     for i in 0..num_loops {
         println!("--- Test #{} ---", i + 1);
         
-        // Get current nonce before transaction
-        let nonce_before = client.get_transaction_count(wallet_address, None).await?.as_u64();
-        println!("Nonce before TX: {}", nonce_before);
+        // Use incrementing nonce based on initial nonce
+        let tx_nonce = initial_nonce + i as u64;
+        println!("Using nonce for TX: {}", tx_nonce);
         
         // Create transaction
         let max_priority_fee_per_gas = U256::from(1_000_000_000); // 1 gwei
@@ -69,7 +69,7 @@ async fn main() -> Result<()> {
             .to(wallet_address)
             .value(U256::zero())
             .chain_id(chain_id.as_u64())
-            .nonce(nonce_before)
+            .nonce(tx_nonce)
             .gas(21000)
             .max_fee_per_gas(max_fee_per_gas)
             .max_priority_fee_per_gas(max_priority_fee_per_gas);
@@ -107,7 +107,7 @@ async fn main() -> Result<()> {
         println!("Nonce after TX: {}", nonce_after);
         
         // Check if nonce was updated correctly
-        let expected_nonce = nonce_before + 1;
+        let expected_nonce = tx_nonce + 1;
         if nonce_after == expected_nonce {
             println!("✓ PASS: Nonce updated correctly (expected: {}, got: {})", expected_nonce, nonce_after);
             successful_tests += 1;
